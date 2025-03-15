@@ -48,7 +48,10 @@ def create_session(cache):
         pass
     session.cookies.update(lwp_cookiejar)
     session.headers.update({
-        'User-agent': USER_AGENT
+        'User-Agent': USER_AGENT,
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate',
+        'Accept': '*/*',  # this is essential for imgur
     })
     return session
 
@@ -58,18 +61,19 @@ def load_on_disk_options(site):
         with open('leech.json') as store_file:
             store = json.load(store_file)
             login = store.get('logins', {}).get(site.site_key(), False)
-            configured_site_options = store.get('site_options', {}).get(site.site_key(), {})
             cover_options = store.get('cover', {})
-            output_dir = store.get('output_dir', False)
+            image_options = store.get('images', {})
+            consolidated_options = {
+                **{k: v for k, v in store.items() if k not in ('cover', 'images', 'logins')},
+                **store.get('site_options', {}).get(site.site_key(), {})
+            }
     except FileNotFoundError:
         logger.info("Unable to locate leech.json. Continuing assuming it does not exist.")
         login = False
-        configured_site_options = {}
+        image_options = {}
         cover_options = {}
-        output_dir = False
-    if output_dir and 'output_dir' not in configured_site_options:
-        configured_site_options['output_dir'] = output_dir
-    return configured_site_options, login, cover_options
+        consolidated_options = {}
+    return consolidated_options, login, cover_options, image_options
 
 
 def create_options(site, site_options, unused_flags):
@@ -80,7 +84,7 @@ def create_options(site, site_options, unused_flags):
 
     flag_specified_site_options = site.interpret_site_specific_options(**unused_flags)
 
-    configured_site_options, login, cover_options = load_on_disk_options(site)
+    configured_site_options, login, cover_options, image_options = load_on_disk_options(site)
 
     overridden_site_options = json.loads(site_options)
 
@@ -88,10 +92,11 @@ def create_options(site, site_options, unused_flags):
     # and overridden, and flag-specified options together in that order.
     options = dict(
         list(default_site_options.items()) +
+        list(cover_options.items()) +
+        list(image_options.items()) +
         list(configured_site_options.items()) +
         list(overridden_site_options.items()) +
-        list(flag_specified_site_options.items()) +
-        list(cover_options.items())
+        list(flag_specified_site_options.items())
     )
     return options, login
 
@@ -108,10 +113,11 @@ def open_story(site, url, session, login, options):
     try:
         story = handler.extract(url)
     except sites.SiteException as e:
-        logger.error(e.args)
+        logger.error(e)
         return
     if not story:
-        raise Exception("Couldn't extract story")
+        logger.error("Couldn't extract story")
+        return
     return story
 
 
@@ -158,7 +164,7 @@ def flush(verbose):
 @click.option('--verbose', '-v', is_flag=True, help="Verbose debugging output")
 @site_specific_options  # Includes other click.options specific to sites
 def download(urls, site_options, cache, verbose, normalize, output_dir, **other_flags):
-    """Downloads a story and saves it on disk as a ebpub ebook."""
+    """Downloads a story and saves it on disk as an epub ebook."""
     configure_logging(verbose)
     session = create_session(cache)
 
@@ -169,8 +175,18 @@ def download(urls, site_options, cache, verbose, normalize, output_dir, **other_
         if story:
             filename = ebook.generate_epub(
                 story, options,
+                image_options={
+                    'image_fetch': options.get('image_fetch', True),
+                    'image_format': options.get('image_format', 'jpeg'),
+                    'compress_images': options.get('compress_images', False),
+                    'max_image_size': options.get('max_image_size', 1_000_000),
+                    'always_convert_images': options.get('always_convert_images', False)
+                },
                 normalize=normalize,
-                output_dir=output_dir or options.get('output_dir', os.getcwd())
+                output_dir=output_dir or options.get('output_dir', os.getcwd()),
+                allow_spaces=options.get('allow_spaces', False),
+                session=session,
+                parser=options.get('parser', 'lxml')
             )
             logger.info("File created: " + filename)
         else:

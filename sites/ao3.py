@@ -4,7 +4,6 @@ import logging
 import datetime
 import re
 import requests_cache
-from bs4 import BeautifulSoup
 from . import register, Site, Section, Chapter, SiteException
 
 logger = logging.getLogger(__name__)
@@ -22,8 +21,9 @@ class ArchiveOfOurOwn(Site):
 
     def login(self, login_details):
         with requests_cache.disabled():
+            # Can't just pass this url to _soup because I need the cookies later
             login = self.session.get('https://archiveofourown.org/users/login')
-            soup = BeautifulSoup(login.text, 'html5lib')
+            soup, nobase = self._soup(login.text)
             post, action, method = self._form_data(soup.find(id='new_user'))
             post['user[login]'] = login_details[0]
             post['user[password]'] = login_details[1]
@@ -46,7 +46,7 @@ class ArchiveOfOurOwn(Site):
         # Fetch the full work
         url = f'http://archiveofourown.org/works/{workid}?view_adult=true&view_full_work=true'
         logger.info("Extracting full work @ %s", url)
-        soup = self._soup(url)
+        soup, base = self._soup(url)
 
         if not soup.find(id='workskin'):
             raise SiteException("Can't find the story text; you may need to log in or flush the cache")
@@ -60,7 +60,7 @@ class ArchiveOfOurOwn(Site):
         )
 
         # Fetch the chapter list as well because it contains info that's not in the full work
-        nav_soup = self._soup(f'https://archiveofourown.org/works/{workid}/navigate')
+        nav_soup, nav_base = self._soup(f'https://archiveofourown.org/works/{workid}/navigate')
         chapters = soup.select('#chapters > div')
         if len(chapters) == 1:
             # in a single-chapter story the #chapters div is actually the chapter
@@ -83,13 +83,13 @@ class ArchiveOfOurOwn(Site):
             story.add(Chapter(
                 title=link.string,
                 # the `or soup` fallback covers single-chapter works
-                contents=self._chapter(chapter_soup),
+                contents=self._chapter(chapter_soup, base),
                 date=updated
             ))
 
         return story
 
-    def _chapter(self, soup):
+    def _chapter(self, soup, base):
         content = soup.find('div', role='article')
 
         for landmark in content.find_all(class_='landmark'):
@@ -102,7 +102,7 @@ class ArchiveOfOurOwn(Site):
             for landmark in notes.find_all(class_='landmark'):
                 landmark.decompose()
 
-        self._clean(content)
+        self._clean(content, base)
 
         return content.prettify() + (notes and notes.prettify() or '')
 
@@ -121,7 +121,7 @@ class ArchiveOfOurOwnSeries(ArchiveOfOurOwn):
     def extract(self, url):
         seriesid = re.match(r'^https?://archiveofourown\.org/series/(\d+)/?.*', url).group(1)
 
-        soup = self._soup(f'http://archiveofourown.org/series/{seriesid}?view_adult=true')
+        soup, base = self._soup(f'http://archiveofourown.org/series/{seriesid}?view_adult=true')
 
         story = Section(
             title=soup.select('#main h2.heading')[0].text.strip(),

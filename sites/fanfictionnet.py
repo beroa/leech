@@ -24,7 +24,7 @@ class FanFictionNet(Site):
             return 'https://www.fanfiction.net/s/' + match.group(1) + '/'
 
     def extract(self, url):
-        soup = self._soup(url)
+        soup, base = self._soup(url)
 
         content = soup.find(id="content_wrapper_inner")
         if not content:
@@ -76,7 +76,7 @@ class FanFictionNet(Site):
         # # sleep 10 seconds
         # time.sleep(10)
         logger.info("Fetching chapter @ %s", url)
-        soup = self._soup(url)
+        soup, base = self._soup(url)
 
         content = soup.find(id="content_wrapper_inner")
         if not content:
@@ -94,7 +94,7 @@ class FanFictionNet(Site):
         except Exception:
             logger.exception("Trouble cleaning attributes")
 
-        self._clean(text)
+        self._clean(text, base)
 
         return text.prettify()
 
@@ -110,7 +110,7 @@ class FanFictionNet(Site):
                 self.session.cache.delete_url(fallback)
                 raise CloudflareException("Couldn't fetch, presumably because of Cloudflare protection, and falling back to archive.org failed; if some chapters were succeeding, try again?", url, fallback)
         try:
-            super()._soup(self, url, retry=3, retry_delay=60, delay=5, *args, **kwargs)
+            return super()._soup(self, url, retry=3, retry_delay=60, delay=5, *args, **kwargs)
         except CloudflareException:
             self._cloudflared = True
             return self._soup(url, *args, **kwargs)

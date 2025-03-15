@@ -4,11 +4,12 @@ import glob
 import os
 import random
 import uuid
+import datetime
 import time
 import logging
 import urllib
 import re
-import attr
+from attrs import define, field, Factory
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
@@ -21,24 +22,32 @@ def _default_uuid_string(self):
     return str(uuid.UUID(int=rd.getrandbits(8*16), version=4))
 
 
-@attr.s
+@define
+class Image:
+    path: str
+    contents: str
+    content_type: str
+
+
+@define
 class Chapter:
-    title = attr.ib()
-    contents = attr.ib()
-    date = attr.ib(default=False)
+    title: str
+    contents: str
+    date: datetime.datetime = False
+    images: list = Factory(list)
 
 
-@attr.s
+@define
 class Section:
-    title = attr.ib()
-    author = attr.ib()
-    url = attr.ib()
-    cover_url = attr.ib(default='')
-    id = attr.ib(default=attr.Factory(_default_uuid_string, takes_self=True), converter=str)
-    contents = attr.ib(default=attr.Factory(list))
-    footnotes = attr.ib(default=attr.Factory(list))
-    tags = attr.ib(default=attr.Factory(list))
-    summary = attr.ib(default='')
+    title: str
+    author: str
+    url: str
+    cover_url: str = ''
+    id: str = Factory(_default_uuid_string, takes_self=True)
+    contents: list = Factory(list)
+    footnotes: list = Factory(list)
+    tags: list = Factory(list)
+    summary: str = ''
 
     def __iter__(self):
         return self.contents.__iter__()
@@ -66,17 +75,17 @@ class Section:
                 yield chapter.date
 
 
-@attr.s
+@define
 class Site:
     """A Site handles checking whether a URL might represent a site, and then
     extracting the content of a story from said site.
     """
-    session = attr.ib()
-    footnotes = attr.ib(factory=list, init=False)
-    options = attr.ib(default=attr.Factory(
+    session: object = field()
+    footnotes: list = field(factory=list, init=False)
+    options: dict = Factory(
         lambda site: site.get_default_options(),
-        True
-    ))
+        takes_self=True
+    )
 
     @classmethod
     def site_key(cls):
@@ -101,13 +110,43 @@ class Site:
                 default=True,
                 help="If true, colors will be stripped from the text."
             ),
+            SiteSpecificOption(
+                'image_fetch',
+                '--fetch-images/--no-fetch-images',
+                default=True,
+                help="If true, images embedded in the story will be downloaded"
+            ),
+            SiteSpecificOption(
+                'spoilers',
+                '--spoilers',
+                choices=('include', 'inline', 'skip'),
+                default='include',
+                help="Whether to include spoilers"
+            ),
+            SiteSpecificOption(
+                'deprecated_skip_spoilers',
+                '--skip-spoilers/--include-spoilers',
+                help="If true, do not transcribe any tags that are marked as a spoiler. (DEPRECATED)",
+                exposed=False,
+                click_kwargs={
+                    "callback": lambda ctx, param, value: ctx.params.update({"spoilers": value and "skip" or "include"}),
+                },
+            ),
+            SiteSpecificOption(
+                'parser',
+                '--parser',
+                help="Which HTML parser to use",
+                choices=('lxml', 'html5lib', 'html.parser', 'lxml-xml'),
+                default='lxml',
+            ),
         ]
 
     @classmethod
     def get_default_options(cls):
         options = {}
         for option in cls.get_site_specific_option_defs():
-            options[option.name] = option.default
+            if option.exposed:
+                options[option.name] = option.default
         return options
 
     @classmethod
@@ -119,8 +158,8 @@ class Site:
         """
         options = {}
         for option in cls.get_site_specific_option_defs():
-            option_value = kwargs[option.name]
-            if option_value is not None:
+            option_value = kwargs.get(option.name)
+            if option.exposed and option_value is not None:
                 options[option.name] = option_value
         return options
 
@@ -144,22 +183,31 @@ class Site:
     def login(self, login_details):
         raise NotImplementedError()
 
-    def _soup(self, url, method='html5lib', delay=0, retry=3, retry_delay=10, **kw):
-        page = self.session.get(url, **kw)
-        if not page:
-            if page.status_code == 403 and page.headers.get('Server', False) == 'cloudflare' and "captcha-bypass" in page.text:
-                raise CloudflareException("Couldn't fetch, probably because of Cloudflare protection", url)
-            if retry and retry > 0:
-                real_delay = retry_delay
-                if 'Retry-After' in page.headers:
-                    real_delay = int(page.headers['Retry-After'])
-                logger.warning("Load failed: waiting %s to retry (%s: %s)", real_delay, page.status_code, page.url)
-                time.sleep(real_delay)
-                return self._soup(url, method=method, retry=retry - 1, retry_delay=retry_delay, **kw)
-            raise SiteException("Couldn't fetch", url)
-        if delay and delay > 0 and not page.from_cache:
-            time.sleep(delay)
-        return BeautifulSoup(page.text, method)
+    def _soup(self, url, method=False, delay=0, retry=3, retry_delay=10, **kw):
+        if not method:
+            method = self.options.get('parser', 'lxml')
+        if url.startswith('http://') or url.startswith('https://'):
+            page = self.session.get(url, **kw)
+            if not page:
+                if page.status_code == 403 and page.headers.get('Server', False) == 'cloudflare' and "captcha-bypass" in page.text:
+                    raise CloudflareException("Couldn't fetch, probably because of Cloudflare protection", url)
+                if retry and retry > 0:
+                    real_delay = retry_delay
+                    if 'Retry-After' in page.headers:
+                        real_delay = int(page.headers['Retry-After'])
+                    logger.warning("Load failed: waiting %s to retry (%s: %s)", real_delay, page.status_code, page.url)
+                    time.sleep(real_delay)
+                    return self._soup(url, method=method, retry=retry - 1, retry_delay=retry_delay, **kw)
+                raise SiteException("Couldn't fetch", url)
+            if delay and delay > 0 and not page.from_cache:
+                time.sleep(delay)
+            text = page.text
+            fallback_base = url
+        else:
+            text = url
+            fallback_base = ''
+        soup = BeautifulSoup(text, method)
+        return soup, (soup.head and soup.head.base) and soup.head.base.get('href') or fallback_base
 
     def _form_in_soup(self, soup):
         if soup.name == 'form':
@@ -199,7 +247,7 @@ class Site:
         return data, form.attrs.get('action'), form.attrs.get('method', 'get').lower()
 
     def _new_tag(self, *args, **kw):
-        soup = BeautifulSoup("", 'html5lib')
+        soup = BeautifulSoup("", self.options.get('parser'))
         return soup.new_tag(*args, **kw)
 
     def _join_url(self, *args, **kwargs):
@@ -240,7 +288,7 @@ class Site:
 
         return spoiler_link
 
-    def _clean(self, contents):
+    def _clean(self, contents, base=False):
         """Clean up story content to be more ebook-friendly
 
         TODO: this expects a soup as its argument, so the couple of API-driven sites can't use it as-is
@@ -263,32 +311,51 @@ class Site:
             for tag in contents.find_all(style=re.compile(r'(?:color|background)\s*:')):
                 tag['style'] = re.sub(r'(?:color|background)\s*:[^;]+;?', '', tag['style'])
 
+        if base:
+            for img in contents.find_all('img', src=True):
+                # Later epub processing needs absolute image URLs
+                # print("fixing img src", img['src'], self._join_url(base, img['src']))
+                img['src'] = self._join_url(base, img['src'])
+                del img['srcset']
+                del img['sizes']
+
         return contents
 
 
-@attr.s(hash=True)
+@define
 class SiteSpecificOption:
     """Represents a site-specific option that can be configured.
 
     Will be added to the CLI as a click.option -- many of these
     fields correspond to click.option arguments."""
-    name = attr.ib()
-    flag_pattern = attr.ib()
-    type = attr.ib(default=None)
-    help = attr.ib(default=None)
-    default = attr.ib(default=None)
+    name: str
+    flag_pattern: str
+    type: object = None
+    default: bool = False
+    help: str = None
+    choices: tuple = None
+    exposed: bool = True
+    click_kwargs: frozenset = field(converter=lambda kwargs: frozenset(kwargs.items()), default={})
+
+    def __eq__(self, other):
+        return self.name == other.name
+
+    def __hash__(self):
+        return hash(self.name)
 
     def as_click_option(self):
         return click.option(
             str(self.name),
             str(self.flag_pattern),
-            type=self.type,
+            type=self.choices and click.Choice(self.choices) or self.type,
             # Note: This default not matching self.default is intentional.
             # It ensures that we know if a flag was explicitly provided,
             # which keeps it from overriding options set in leech.json etc.
             # Instead, default is used in site_cls.get_default_options()
             default=None,
-            help=self.help if self.help is not None else ""
+            help=self.help if self.help is not None else "",
+            expose_value=self.exposed,
+            **dict(self.click_kwargs)
         )
 
 
