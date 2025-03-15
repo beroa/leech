@@ -5,6 +5,7 @@ import datetime
 import re
 import urllib.parse
 import attr
+import time
 from . import register, Site, SiteException, CloudflareException, Section, Chapter
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,8 @@ class FanFictionNet(Site):
         return story
 
     def _chapter(self, url):
+        # # sleep 10 seconds
+        # time.sleep(10)
         logger.info("Fetching chapter @ %s", url)
         soup = self._soup(url)
 
@@ -107,7 +110,7 @@ class FanFictionNet(Site):
                 self.session.cache.delete_url(fallback)
                 raise CloudflareException("Couldn't fetch, presumably because of Cloudflare protection, and falling back to archive.org failed; if some chapters were succeeding, try again?", url, fallback)
         try:
-            super()._soup(self, url, *args, **kwargs)
+            super()._soup(self, url, retry=3, retry_delay=60, delay=5, *args, **kwargs)
         except CloudflareException:
             self._cloudflared = True
             return self._soup(url, *args, **kwargs)

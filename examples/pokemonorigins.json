@@ -1,0 +1,10 @@
+{
+	"url": "https://daystareld.com/pokemon-1/",
+	"title": "Pokemon: The Origin of Species",
+	"author": "Daystar Eld",
+	"content_selector": "#main",
+	"content_title_selector": "h1.entry-title",
+	"content_text_selector": ".entry-content",
+	"filter_selector": ".sharedaddy, .wpcnt, style, .navigation",
+	"next_selector": "a[rel=\"next\"]:not([href*=\"prologue\"])"
+}
