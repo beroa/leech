@@ -34,6 +34,9 @@ class RoyalRoad(Site):
     @classmethod
     def matches(cls, url):
         # e.g. https://royalroad.com/fiction/6752/lament-of-the-fallen
+        # Note: urls like https://www.royalroad.com/fiction/chapter/2330878 also exist, which it
+        # might be nice to support, but I need to look into an API call to get the work ID from
+        # a chapter ID.
         match = re.match(r'^(https?://(?:www\.)?%s\.com/fiction/\d+)/?.*' % cls.domain, url)
         if match:
             return match.group(1) + '/'
@@ -68,8 +71,7 @@ class RoyalRoad(Site):
 
         http.client._MAXHEADERS = original_maxheaders
 
-        story.footnotes = self.footnotes
-        self.footnotes = []
+        self._finalize(story)
 
         return story
 
